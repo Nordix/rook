@@ -17,10 +17,13 @@ limitations under the License.
 package object
 
 import (
+	"bufio"
 	"bytes"
 	_ "embed"
 	"fmt"
+	"log"
 	"net/url"
+	"os"
 	"path"
 	"strings"
 	"text/template"
@@ -258,18 +261,34 @@ func (c *clusterConfig) makeRGWPodSpec(rgwConfig *rgwConfig) (v1.PodTemplateSpec
 }
 
 func (c *clusterConfig) createCaBundleUpdateInitContainer(rgwConfig *rgwConfig) v1.Container {
-	caBundleMount := v1.VolumeMount{Name: caBundleVolumeName, MountPath: caBundleSourceCustomDir, ReadOnly: true}
-	volumeMounts := append(controller.DaemonVolumeMounts(c.DataPathMap, rgwConfig.ResourceName, c.clusterSpec.DataDirHostPath), caBundleMount)
+	var arg []string
+	var volumeMounts []v1.VolumeMount
 	updatedCaBundleDir := "/tmp/new-ca-bundle/"
-	updatedBundleMount := v1.VolumeMount{Name: caBundleUpdatedVolumeName, MountPath: updatedCaBundleDir, ReadOnly: false}
-	volumeMounts = append(volumeMounts, updatedBundleMount)
-	return v1.Container{
-		Name:    "update-ca-bundle-initcontainer",
-		Command: []string{"/bin/bash", "-c"},
-		// copy all content of caBundleExtractedDir to avoid directory mount itself
-		Args: []string{
+	if isOS("sles") {
+		// directory configuration works for sles based distro
+		caBundleMount := v1.VolumeMount{Name: caBundleVolumeName, MountPath: caBundleSourceCustomDirSles, ReadOnly: true}
+		volumeMounts = append(controller.DaemonVolumeMounts(c.DataPathMap, rgwConfig.ResourceName, c.clusterSpec.DataDirHostPath), caBundleMount)
+		updatedBundleMount := v1.VolumeMount{Name: caBundleUpdatedVolumeName, MountPath: updatedCaBundleDir, ReadOnly: false}
+		volumeMounts = append(volumeMounts, updatedBundleMount)
+		arg = []string{
+			// copy all content of caBundleExtractedDir to avoid directory mount itself
+			fmt.Sprintf("/usr/sbin/update-ca-certificates; cp -rf %s. %s", caBundleExtractedDirSles, updatedCaBundleDir),
+		}
+	} else {
+		// directory configuration works for centOS RedHat based distros
+		caBundleMount := v1.VolumeMount{Name: caBundleVolumeName, MountPath: caBundleSourceCustomDir, ReadOnly: true}
+		volumeMounts = append(controller.DaemonVolumeMounts(c.DataPathMap, rgwConfig.ResourceName, c.clusterSpec.DataDirHostPath), caBundleMount)
+		updatedBundleMount := v1.VolumeMount{Name: caBundleUpdatedVolumeName, MountPath: updatedCaBundleDir, ReadOnly: false}
+		volumeMounts = append(volumeMounts, updatedBundleMount)
+		arg = []string{
+			// copy all content of caBundleExtractedDir to avoid directory mount itself
 			fmt.Sprintf("/usr/bin/update-ca-trust extract; cp -rf %s/* %s", caBundleExtractedDir, updatedCaBundleDir),
-		},
+		}
+	}
+	return v1.Container{
+		Name:            "update-ca-bundle-initcontainer",
+		Command:         []string{"/bin/bash", "-c"},
+		Args:            arg,
 		Image:           c.clusterSpec.CephVersion.Image,
 		ImagePullPolicy: controller.GetContainerImagePullPolicy(c.clusterSpec.CephVersion.ImagePullPolicy),
 		VolumeMounts:    volumeMounts,
@@ -313,6 +332,30 @@ func (c *clusterConfig) vaultTokenInitContainer(rgwConfig *rgwConfig, kmsEnabled
 		Resources:       c.store.Spec.Gateway.Resources,
 		SecurityContext: controller.PodSecurityContext(),
 	}
+}
+
+func compareString(x string, y string) bool {
+	if x == y {
+		return true
+	}
+	return false
+}
+func isOS(distro string) bool {
+	var status bool
+	file, err := os.Open("/etc/*-release")
+	if err != nil {
+		log.Fatalf("failed opening file: %s", err)
+	}
+	scanner := bufio.NewScanner(file)
+	scanner.Split(bufio.ScanLines)
+
+	for scanner.Scan() {
+		if compareString(distro, scanner.Text()) {
+			status = true
+		}
+	}
+	file.Close()
+	return status
 }
 
 func (c *clusterConfig) makeChownInitContainer(rgwConfig *rgwConfig) v1.Container {
@@ -379,7 +422,12 @@ func (c *clusterConfig) makeDaemonContainer(rgwConfig *rgwConfig) (v1.Container,
 		container.VolumeMounts = append(container.VolumeMounts, mount)
 	}
 	if c.store.Spec.Gateway.CaBundleRef != "" {
-		updatedBundleMount := v1.VolumeMount{Name: caBundleUpdatedVolumeName, MountPath: caBundleExtractedDir, ReadOnly: true}
+		var updatedBundleMount v1.VolumeMount
+		if isOS("sles") {
+			updatedBundleMount = v1.VolumeMount{Name: caBundleUpdatedVolumeName, MountPath: caBundleExtractedDirSles, ReadOnly: true}
+		} else {
+			updatedBundleMount = v1.VolumeMount{Name: caBundleUpdatedVolumeName, MountPath: caBundleExtractedDir, ReadOnly: true}
+		}
 		container.VolumeMounts = append(container.VolumeMounts, updatedBundleMount)
 	}
 	kmsEnabled, err := c.CheckRGWKMS()
