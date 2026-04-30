@@ -900,7 +900,7 @@ func (a *OsdAgent) WipeDevicesFromOtherClusters(context *clusterd.Context) error
 				}
 				logger.Infof("begin wiping OSD %d device %q belonging to a different ceph cluster %q ", osdID, deviceToWipe, existingOSD.CephFsid)
 				logger.Infof("zap OSD.%d on device path %q", osdID, deviceToWipe)
-				output, err := context.Executor.ExecuteCommandWithCombinedOutput("stdbuf", "-oL", cephVolumeCmd, "lvm", "zap", deviceToWipe)
+				output, err := context.Executor.ExecuteCommandWithCombinedOutput("stdbuf", "-oL", cephVolumeCmd, "lvm", "zap", deviceToWipe, "--destroy")
 				if err != nil {
 					return errors.Wrapf(err, "failed to zap osd.%d path %q. %s.", osdID, deviceToWipe, output)
 				}
@@ -937,7 +937,7 @@ func wipeEncryptedDevicesFromOtherClusters(context *clusterd.Context, currentClu
 			currentDiskCephFSID := strings.SplitAfter(ceph_fsid, "=")[1]
 			if currentDiskCephFSID != currentClusterFSID {
 				logger.Infof("cleaning encrypted disk %q (%q) that is part of a different ceph cluster %q", disk.Name, disk.RealPath, currentDiskCephFSID)
-				output, err := context.Executor.ExecuteCommandWithCombinedOutput("stdbuf", "-oL", cephVolumeCmd, "lvm", "zap", disk.RealPath)
+				output, err := context.Executor.ExecuteCommandWithCombinedOutput("stdbuf", "-oL", cephVolumeCmd, "lvm", "zap", disk.RealPath, "--destroy")
 				if err != nil {
 					return errors.Wrapf(err, "failed to zap encrypted disk with different ceph cluster %q. %s.", disk.RealPath, output)
 				}
