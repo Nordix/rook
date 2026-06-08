@@ -407,7 +407,7 @@ func (c *Cluster) checkHealth(ctx context.Context) error {
 }
 
 func (c *Cluster) shouldFailoverMonImmediately(ctx context.Context, monName string) bool {
-	// If the assigned node does not exist, reschedule immediately
+	// If the assigned node does not exist or is unschedulable (cordoned), reschedule immediately
 	log.NamespacedDebug(c.Namespace, logger, "checking if mon %q is scheduled on a node", monName)
 	assignedNode := ""
 	if mapping, ok := c.mapping.Schedule[monName]; ok {
@@ -424,13 +424,44 @@ func (c *Cluster) shouldFailoverMonImmediately(ctx context.Context, monName stri
 	}
 
 	log.NamespacedDebug(c.Namespace, logger, "mon %q is scheduled on node %q", monName, assignedNode)
-	nodeExists, err := k8sutil.NodeWithHostnameExists(ctx, c.context.Clientset, assignedNode)
-	if err == nil && !nodeExists {
+
+	// Check if node exists and is schedulable
+	nodeExists, nodeSchedulable, err := c.checkNodeExistsAndSchedulable(ctx, assignedNode)
+	if err != nil {
+		log.NamespacedWarning(c.Namespace, logger, "failed to check node %q status for mon %q: %v", assignedNode, monName, err)
+		return false
+	}
+
+	if !nodeExists {
 		log.NamespacedWarning(c.Namespace, logger, "mon %q NOT found in quorum and its assigned node %q is not found, failing over immediately", monName, assignedNode)
 		return true
 	}
 
+	if !nodeSchedulable {
+		log.NamespacedWarning(c.Namespace, logger, "mon %q NOT found in quorum and its assigned node %q is unschedulable (cordoned), failing over immediately", monName, assignedNode)
+		return true
+	}
+
 	return false
+}
+
+// checkNodeExistsAndSchedulable checks if a node with the given hostname exists and is schedulable.
+// Returns (exists, schedulable, error).
+func (c *Cluster) checkNodeExistsAndSchedulable(ctx context.Context, hostname string) (bool, bool, error) {
+	options := metav1.ListOptions{LabelSelector: fmt.Sprintf("%s=%s", k8sutil.LabelHostname(), hostname)}
+	nodes, err := c.context.Clientset.CoreV1().Nodes().List(ctx, options)
+	if err != nil {
+		return false, false, errors.Wrapf(err, "failed to query node with hostname %q", hostname)
+	}
+
+	if len(nodes.Items) == 0 {
+		return false, false, nil
+	}
+
+	// Node exists, check if it's schedulable
+	node := nodes.Items[0]
+	schedulable := !node.Spec.Unschedulable
+	return true, schedulable, nil
 }
 
 // reconcileExternalMons handling external monitors defined in CephCluster.spec.mon.externalMonIDs when Rook managing local cluster.

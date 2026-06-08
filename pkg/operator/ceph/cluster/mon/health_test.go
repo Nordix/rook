@@ -225,6 +225,7 @@ func TestScheduleFailoverImmediately(t *testing.T) {
 		"a": {Name: "a", Hostname: "nodea"},
 		"b": {Name: "b"},
 		"c": {Name: "c", Hostname: "nodec"},
+		"d": {Name: "d", Hostname: "noded"},
 	}
 
 	node := &v1.Node{
@@ -236,7 +237,7 @@ func TestScheduleFailoverImmediately(t *testing.T) {
 	_, err := clientset.CoreV1().Nodes().Create(context.TODO(), node, metav1.CreateOptions{})
 	assert.NoError(t, err)
 
-	// mon a is assigned to a node, so it should not failover immediately
+	// mon a is assigned to a schedulable node, so it should not failover immediately
 	assert.False(t, c.shouldFailoverMonImmediately((context.TODO()), "a"))
 	// mon b is not assigned to a node, so it should not failover immediately
 	assert.False(t, c.shouldFailoverMonImmediately((context.TODO()), "b"))
@@ -247,6 +248,21 @@ func TestScheduleFailoverImmediately(t *testing.T) {
 	assert.NoError(t, err)
 	// node a has been deleted, so mon a should failover immediately
 	assert.True(t, c.shouldFailoverMonImmediately((context.TODO()), "a"))
+
+	// Test that the function detects cordoned (unschedulable) nodes
+	cordonedNode := &v1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "d",
+			Labels: map[string]string{"kubernetes.io/hostname": "noded"},
+		},
+		Spec: v1.NodeSpec{
+			Unschedulable: true, // Node is cordoned/draining
+		},
+	}
+	_, err = clientset.CoreV1().Nodes().Create(context.TODO(), cordonedNode, metav1.CreateOptions{})
+	assert.NoError(t, err)
+	// mon d is assigned to a cordoned node, so it should failover immediately
+	assert.True(t, c.shouldFailoverMonImmediately((context.TODO()), "d"))
 }
 
 func TestTrackMonsOutOfQuorum(t *testing.T) {
